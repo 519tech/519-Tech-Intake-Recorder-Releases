@@ -1,0 +1,30 @@
+name: Publish Installer Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate mirrored artifacts
+        run: |
+          test -f "downloads/${GITHUB_REF_NAME}/519 Tech Intake Recorder-${GITHUB_REF_NAME#v}.dmg"
+          test -f "latest/appcast.xml"
+      - name: Create public GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "downloads/${GITHUB_REF_NAME}/519 Tech Intake Recorder-${GITHUB_REF_NAME#v}.dmg" \
+            "latest/appcast.xml" \
+            --title "519 Tech Intake Recorder ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --verify-tag
+
