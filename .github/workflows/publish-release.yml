@@ -27,4 +27,3 @@ jobs:
             --title "519 Tech Intake Recorder ${GITHUB_REF_NAME#v}" \
             --generate-notes \
             --verify-tag
-
