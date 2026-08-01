@@ -6,7 +6,7 @@ The application source code is maintained in a separate private repository. No s
 
 ## Download
 
-Open [Releases](../../releases/latest) and download the latest `.dmg`. Open the installer and drag **519 Tech Intake Recorder** to **Applications**.
+Open [Releases](../../releases/latest) and download the latest `519-Tech-Intake-Recorder-VERSION.dmg`. Open the installer and drag **519 Tech Intake Recorder** to **Applications**.
 
 Every published installer is expected to be:
 

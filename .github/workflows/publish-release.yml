@@ -68,7 +68,7 @@ jobs:
           fi
 
           VERSION="${GITHUB_REF_NAME#v}"
-          DMG_NAME="519 Tech Intake Recorder-$VERSION.dmg"
+          DMG_NAME="519-Tech-Intake-Recorder-$VERSION.dmg"
           DMG_PATH="downloads/$GITHUB_REF_NAME/$DMG_NAME"
           APPCAST_PATH="latest/appcast.xml"
 
@@ -226,7 +226,7 @@ jobs:
             rm -f "$helper_entitlements"
           done
 
-          EXPECTED_URL="https://github.com/519tech/519-Tech-Intake-Recorder-Releases/releases/download/v$VERSION/${DMG_NAME// /%20}"
+          EXPECTED_URL="https://github.com/519tech/519-Tech-Intake-Recorder-Releases/releases/download/v$VERSION/$DMG_NAME"
           swift scripts/verify_sparkle_release.swift \
             "$APPCAST_PATH" \
             "$DMG_PATH" \
