@@ -1,0 +1,531 @@
+name: Verify Internal Installer Release
+
+on:
+  push:
+    tags:
+      - "internal-v*"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: zsh -e -o pipefail {0}
+
+concurrency:
+  group: public-installer-release
+  cancel-in-progress: false
+
+env:
+  APPROVED_SPARKLE_PUBLIC_ED_KEY: gPDlaoHU2zbAMYp3KKD5x0su3OOp2WNPAlj0Az7x+oc=
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      dmg_name: ${{ steps.metadata.outputs.dmg_name }}
+      dmg_sha256: ${{ steps.artifacts.outputs.dmg_sha256 }}
+      appcast_sha256: ${{ steps.artifacts.outputs.appcast_sha256 }}
+
+    steps:
+      - name: Check out the tagged internal artifacts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd6 # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate internal tag and mirrored paths
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          TAG_PATTERN='^internal-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          PRODUCTION_TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [[ ! "$GITHUB_REF_NAME" =~ $TAG_PATTERN ]]; then
+            echo "Internal release tags must use internal-vMAJOR.MINOR.PATCH with no leading zeroes." >&2
+            exit 1
+          fi
+          if [[ "$SPARKLE_PUBLIC_ED_KEY" != "$APPROVED_SPARKLE_PUBLIC_ED_KEY" ]]; then
+            echo "SPARKLE_PUBLIC_ED_KEY must match the trust root already embedded in installed releases." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-list -n 1 "$GITHUB_REF_NAME")" ]]; then
+            echo "The checked-out commit does not match the internal release tag." >&2
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet refs/remotes/origin/main || \
+             ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "Internal release tags must point to a commit on main." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-list --parents -n 1 HEAD | awk '{print NF}')" != "2" ]]; then
+            echo "The tagged artifact commit must have exactly one parent." >&2
+            exit 1
+          fi
+
+          VERSION="${GITHUB_REF_NAME#internal-v}"
+          DMG_NAME="519-Tech-Intake-Recorder-$VERSION.dmg"
+          DMG_PATH="downloads/$GITHUB_REF_NAME/$DMG_NAME"
+          APPCAST_PATH="latest/appcast.xml"
+          BRIDGE_TAG="internal-v0.1.2"
+          BRIDGE_DMG_NAME="519-Tech-Intake-Recorder-0.1.2.dmg"
+          BRIDGE_DMG_PATH="downloads/$BRIDGE_TAG/$BRIDGE_DMG_NAME"
+
+          IFS=. read -r current_major current_minor current_patch <<< "$VERSION"
+          if (( current_major == 0 && current_minor == 0 )) || \
+             (( current_major == 0 && current_minor == 1 && current_patch < 2 )); then
+            echo "Internal automatic updates begin with the 0.1.2 bridge release." >&2
+            exit 1
+          fi
+
+          [[ -f "$DMG_PATH" && ! -L "$DMG_PATH" ]]
+          [[ -f "$APPCAST_PATH" && ! -L "$APPCAST_PATH" ]]
+          [[ "$(git ls-tree HEAD -- "$DMG_PATH" | awk '{print $1}')" == "100644" ]]
+          [[ "$(git ls-tree HEAD -- "$APPCAST_PATH" | awk '{print $1}')" == "100644" ]]
+
+          if [[ "$VERSION" == "0.1.2" ]]; then
+            [[ "$BRIDGE_DMG_PATH" == "$DMG_PATH" ]]
+          else
+            [[ -f "$BRIDGE_DMG_PATH" && ! -L "$BRIDGE_DMG_PATH" ]]
+            [[ "$(git ls-tree HEAD -- "$BRIDGE_DMG_PATH" | awk '{print $1}')" == "100644" ]]
+            [[ "$(git ls-tree -r --name-only HEAD -- "downloads/$BRIDGE_TAG" | wc -l | tr -d ' ')" == "1" ]]
+            git show-ref --verify --quiet "refs/tags/$BRIDGE_TAG"
+            BRIDGE_COMMIT="$(git rev-list -n 1 "$BRIDGE_TAG")"
+            git merge-base --is-ancestor "$BRIDGE_COMMIT" HEAD
+            [[ "$(git rev-parse "HEAD:$BRIDGE_DMG_PATH")" == "$(git rev-parse "$BRIDGE_TAG:$BRIDGE_DMG_PATH")" ]]
+          fi
+
+          changed_paths="$(git diff --name-only --no-renames HEAD^ HEAD | LC_ALL=C sort)"
+          expected_paths="$(printf '%s\n%s\n' "$DMG_PATH" "$APPCAST_PATH" | LC_ALL=C sort)"
+          if [[ "$changed_paths" != "$expected_paths" ]]; then
+            echo "The tagged commit must change only the expected internal DMG and appcast paths." >&2
+            diff -u <(printf '%s\n' "$expected_paths") <(printf '%s\n' "$changed_paths") || true
+            exit 1
+          fi
+          if ! git diff --name-status --no-renames HEAD^ HEAD | awk '$1 != "A" && $1 != "M" { exit 1 }'; then
+            echo "Internal release artifacts may only be added or modified." >&2
+            exit 1
+          fi
+
+          [[ "$(git ls-tree -r --name-only HEAD -- "downloads/$GITHUB_REF_NAME" | wc -l | tr -d ' ')" == "1" ]]
+          [[ "$(git ls-tree -r --name-only HEAD -- latest | wc -l | tr -d ' ')" == "1" ]]
+          [[ "$(find "downloads/$GITHUB_REF_NAME" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "1" ]]
+          [[ "$(find latest -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "1" ]]
+          [[ -z "$(find "downloads/$GITHUB_REF_NAME" latest -type l -print -quit)" ]]
+
+          while IFS= read -r release_tag; do
+            [[ "$release_tag" == "$GITHUB_REF_NAME" ]] && continue
+            if [[ "$release_tag" =~ $PRODUCTION_TAG_PATTERN ]]; then
+              echo "Internal releases are permanently disabled after published production release $release_tag." >&2
+              exit 1
+            fi
+            [[ "$release_tag" =~ $TAG_PATTERN ]] || continue
+            release_version="${release_tag#internal-v}"
+            IFS=. read -r release_major release_minor release_patch <<< "$release_version"
+            if (( release_major > current_major ||
+                  (release_major == current_major && release_minor > current_minor) ||
+                  (release_major == current_major && release_minor == current_minor && release_patch >= current_patch) )); then
+              echo "$GITHUB_REF_NAME is not newer than published internal release $release_tag." >&2
+              exit 1
+            fi
+          done < <(
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select(.draft == false) | .tag_name'
+          )
+
+          LATEST_TAG="$(gh api "/repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          if [[ "$VERSION" == "0.1.2" ]]; then
+            if [[ "$LATEST_TAG" != "feed-bootstrap" && \
+                  "$LATEST_TAG" != "feed-bootstrap-v2" && \
+                  "$LATEST_TAG" != "$GITHUB_REF_NAME" ]]; then
+              echo "The 0.1.2 bridge can only replace the bootstrap feed or verify its own existing release, not $LATEST_TAG." >&2
+              exit 1
+            fi
+          elif [[ "$LATEST_TAG" != "$GITHUB_REF_NAME" && ! "$LATEST_TAG" =~ $TAG_PATTERN ]]; then
+            echo "The public Latest release is outside the internal update lane: $LATEST_TAG" >&2
+            exit 1
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "dmg_name=$DMG_NAME"
+            echo "dmg_path=$DMG_PATH"
+            echo "bridge_dmg_name=$BRIDGE_DMG_NAME"
+            echo "bridge_dmg_path=$BRIDGE_DMG_PATH"
+            echo "appcast_path=$APPCAST_PATH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify internal app, DMG, and Sparkle signatures
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          DMG_NAME: ${{ steps.metadata.outputs.dmg_name }}
+          DMG_PATH: ${{ steps.metadata.outputs.dmg_path }}
+          BRIDGE_DMG_NAME: ${{ steps.metadata.outputs.bridge_dmg_name }}
+          BRIDGE_TRACKED_PATH: ${{ steps.metadata.outputs.bridge_dmg_path }}
+          APPCAST_PATH: ${{ steps.metadata.outputs.appcast_path }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          MOUNT_DIR="$(mktemp -d "$RUNNER_TEMP/intake-internal-release.XXXXXX")"
+          BRIDGE_MOUNT_DIR=""
+          cleanup() {
+            if [[ -n "$BRIDGE_MOUNT_DIR" ]]; then
+              hdiutil detach "$BRIDGE_MOUNT_DIR" -quiet 2>/dev/null || true
+              rm -rf "$BRIDGE_MOUNT_DIR"
+            fi
+            hdiutil detach "$MOUNT_DIR" -quiet 2>/dev/null || true
+            rm -rf "$MOUNT_DIR"
+          }
+          trap cleanup EXIT
+
+          dmg_size="$(stat -f %z "$DMG_PATH")"
+          appcast_size="$(stat -f %z "$APPCAST_PATH")"
+          (( dmg_size > 0 && dmg_size <= 250000000 ))
+          (( appcast_size > 0 && appcast_size <= 2000000 ))
+
+          # The internal DMG intentionally has no Developer ID signature. Its bytes are
+          # authenticated by the signed Sparkle enclosure after hdiutil integrity checks.
+          hdiutil verify "$DMG_PATH"
+          hdiutil attach -quiet -readonly -nobrowse -mountpoint "$MOUNT_DIR" "$DMG_PATH"
+
+          APP="$MOUNT_DIR/519 Tech Intake Recorder.app"
+          PLIST="$APP/Contents/Info.plist"
+          EXECUTABLE="$APP/Contents/MacOS/IntakeRecorder"
+          [[ -d "$APP" && ! -L "$APP" ]]
+          [[ -f "$PLIST" && ! -L "$PLIST" ]]
+          [[ -f "$EXECUTABLE" && ! -L "$EXECUTABLE" ]]
+          [[ "$(find "$MOUNT_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" == "2" ]]
+          [[ "$(find "$MOUNT_DIR" -mindepth 1 -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')" == "1" ]]
+          [[ -L "$MOUNT_DIR/Applications" ]]
+          [[ "$(readlink "$MOUNT_DIR/Applications")" == "/Applications" ]]
+
+          verify_adhoc_code() {
+            local code_path="$1"
+            local label="$2"
+            local signature_info="$RUNNER_TEMP/internal-signature-$label.txt"
+            codesign --verify --strict --verbose=2 "$code_path"
+            codesign -dv --verbose=4 "$code_path" 2> "$signature_info"
+            grep -Fxq 'Signature=adhoc' "$signature_info"
+            grep -Fxq 'TeamIdentifier=not set' "$signature_info"
+            grep -Eq '^CodeDirectory .*flags=.*adhoc' "$signature_info"
+            if grep -q '^Authority=' "$signature_info"; then
+              echo "$code_path unexpectedly has a certificate authority." >&2
+              exit 1
+            fi
+          }
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          verify_adhoc_code "$APP" app
+          lipo "$EXECUTABLE" -verify_arch arm64
+          plutil -lint "$PLIST"
+
+          [[ "$(plutil -extract CFBundleIdentifier raw -o - "$PLIST")" == "ca.519tech.IntakeRecorder" ]]
+          [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$PLIST")" == "$VERSION" ]]
+          APP_BUILD="$(plutil -extract CFBundleVersion raw -o - "$PLIST")"
+          [[ "$APP_BUILD" =~ '^[1-9][0-9]*$' ]]
+          [[ "$(plutil -extract LSMinimumSystemVersion raw -o - "$PLIST")" == "14.0" ]]
+          [[ "$(plutil -extract LSUIElement raw -o - "$PLIST")" == "true" ]]
+          [[ "$(plutil -extract SUInternalBuild raw -o - "$PLIST")" == "true" ]]
+          [[ "$(plutil -extract SUFeedURL raw -o - "$PLIST")" == "https://github.com/519tech/519-Tech-Intake-Recorder-Releases/releases/latest/download/appcast.xml" ]]
+          [[ "$(plutil -extract SUPublicEDKey raw -o - "$PLIST")" == "$SPARKLE_PUBLIC_ED_KEY" ]]
+          [[ "$(plutil -extract SURequireSignedFeed raw -o - "$PLIST")" == "true" ]]
+          [[ "$(plutil -extract SUVerifyUpdateBeforeExtraction raw -o - "$PLIST")" == "true" ]]
+          [[ "$(plutil -extract SUAllowsAutomaticUpdates raw -o - "$PLIST")" == "true" ]]
+          [[ "$(plutil -extract SUEnableAutomaticChecks raw -o - "$PLIST")" == "true" ]]
+          [[ -n "$(plutil -extract NSMicrophoneUsageDescription raw -o - "$PLIST")" ]]
+
+          ENTITLEMENTS="$RUNNER_TEMP/internal-app-entitlements.plist"
+          codesign --display --entitlements - --xml "$APP" > "$ENTITLEMENTS" 2>/dev/null
+          plutil -lint "$ENTITLEMENTS"
+          plutil -convert json -o - "$ENTITLEMENTS" | \
+            jq -e 'keys == ["com.apple.security.device.audio-input"] and .["com.apple.security.device.audio-input"] == true' > /dev/null
+          if find "$APP/Contents" -type f \( -name '*.provisionprofile' -o -name '*.mobileprovision' \) -print -quit | grep -q .; then
+            echo "Internal builds must not contain a provisioning profile." >&2
+            exit 1
+          fi
+
+          SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+          SPARKLE_CURRENT="$SPARKLE_FRAMEWORK/Versions/Current"
+          [[ -L "$SPARKLE_CURRENT" && "$(readlink "$SPARKLE_CURRENT")" == "B" ]]
+          HELPERS=(
+            "$SPARKLE_FRAMEWORK"
+            "$SPARKLE_CURRENT/XPCServices/Installer.xpc"
+            "$SPARKLE_CURRENT/XPCServices/Downloader.xpc"
+            "$SPARKLE_CURRENT/Autoupdate"
+            "$SPARKLE_CURRENT/Updater.app"
+          )
+          helper_index=0
+          for helper in "${HELPERS[@]}"; do
+            [[ -e "$helper" ]]
+            verify_adhoc_code "$helper" "helper-$helper_index"
+            helper_entitlements="$RUNNER_TEMP/internal-helper-entitlements-$helper_index.plist"
+            codesign --display --entitlements - --xml "$helper" > "$helper_entitlements" 2>/dev/null
+            if [[ -s "$helper_entitlements" ]]; then
+              plutil -lint "$helper_entitlements"
+              for forbidden_key in \
+                com.apple.developer.team-identifier \
+                keychain-access-groups \
+                com.apple.security.get-task-allow \
+                com.apple.security.cs.disable-library-validation \
+                com.apple.security.device.audio-input; do
+                if plutil -convert json -o - "$helper_entitlements" | \
+                    jq -e --arg key "$forbidden_key" 'has($key)' > /dev/null; then
+                  echo "$helper contains forbidden internal-build entitlement $forbidden_key." >&2
+                  exit 1
+                fi
+              done
+            fi
+            (( helper_index += 1 ))
+          done
+
+          macho_count=0
+          while IFS= read -r -d '' code_file; do
+            if file -b "$code_file" | grep -q '^Mach-O'; then
+              verify_adhoc_code "$code_file" "macho-$macho_count"
+              (( macho_count += 1 ))
+            fi
+          done < <(find "$APP" -type f -perm -111 -print0)
+          (( macho_count >= 6 ))
+
+          if [[ "$VERSION" == "0.1.2" ]]; then
+            BRIDGE_DMG_PATH="$DMG_PATH"
+            BRIDGE_BUILD="$APP_BUILD"
+          else
+            BRIDGE_RELEASE_STATE="$RUNNER_TEMP/bridge-release-state.json"
+            gh release view internal-v0.1.2 \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets,isDraft,isPrerelease,tagName > "$BRIDGE_RELEASE_STATE"
+            jq -e \
+              --arg dmg "$BRIDGE_DMG_NAME" \
+              '.tagName == "internal-v0.1.2" and .isDraft == false and .isPrerelease == false and
+               (.assets | length) == 2 and
+               ([.assets[].name] | sort) == ([$dmg, "appcast.xml"] | sort)' \
+              "$BRIDGE_RELEASE_STATE" > /dev/null
+
+            BRIDGE_RELEASE_DIR="$(mktemp -d "$RUNNER_TEMP/bridge-release.XXXXXX")"
+            gh release download internal-v0.1.2 \
+              --repo "$GITHUB_REPOSITORY" \
+              --dir "$BRIDGE_RELEASE_DIR" \
+              --pattern "$BRIDGE_DMG_NAME"
+            BRIDGE_DMG_PATH="$BRIDGE_RELEASE_DIR/$BRIDGE_DMG_NAME"
+            [[ -f "$BRIDGE_DMG_PATH" && ! -L "$BRIDGE_DMG_PATH" ]]
+            [[ "$(find "$BRIDGE_RELEASE_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "1" ]]
+            cmp -s "$BRIDGE_TRACKED_PATH" "$BRIDGE_DMG_PATH"
+
+            hdiutil verify "$BRIDGE_DMG_PATH"
+            BRIDGE_MOUNT_DIR="$(mktemp -d "$RUNNER_TEMP/intake-bridge-release.XXXXXX")"
+            hdiutil attach -quiet -readonly -nobrowse -mountpoint "$BRIDGE_MOUNT_DIR" "$BRIDGE_DMG_PATH"
+
+            BRIDGE_APP="$BRIDGE_MOUNT_DIR/519 Tech Intake Recorder.app"
+            BRIDGE_PLIST="$BRIDGE_APP/Contents/Info.plist"
+            BRIDGE_EXECUTABLE="$BRIDGE_APP/Contents/MacOS/IntakeRecorder"
+            [[ -d "$BRIDGE_APP" && ! -L "$BRIDGE_APP" ]]
+            [[ -f "$BRIDGE_PLIST" && ! -L "$BRIDGE_PLIST" ]]
+            [[ -f "$BRIDGE_EXECUTABLE" && ! -L "$BRIDGE_EXECUTABLE" ]]
+            [[ "$(find "$BRIDGE_MOUNT_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" == "2" ]]
+            [[ -L "$BRIDGE_MOUNT_DIR/Applications" ]]
+            [[ "$(readlink "$BRIDGE_MOUNT_DIR/Applications")" == "/Applications" ]]
+
+            codesign --verify --deep --strict --verbose=2 "$BRIDGE_APP"
+            verify_adhoc_code "$BRIDGE_APP" bridge-app
+            lipo "$BRIDGE_EXECUTABLE" -verify_arch arm64
+            plutil -lint "$BRIDGE_PLIST"
+            [[ "$(plutil -extract CFBundleIdentifier raw -o - "$BRIDGE_PLIST")" == "ca.519tech.IntakeRecorder" ]]
+            [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$BRIDGE_PLIST")" == "0.1.2" ]]
+            BRIDGE_BUILD="$(plutil -extract CFBundleVersion raw -o - "$BRIDGE_PLIST")"
+            [[ "$BRIDGE_BUILD" =~ '^[1-9][0-9]*$' ]]
+            [[ "$(plutil -extract LSMinimumSystemVersion raw -o - "$BRIDGE_PLIST")" == "14.0" ]]
+            [[ "$(plutil -extract LSUIElement raw -o - "$BRIDGE_PLIST")" == "true" ]]
+            [[ "$(plutil -extract SUInternalBuild raw -o - "$BRIDGE_PLIST")" == "true" ]]
+            [[ "$(plutil -extract SUFeedURL raw -o - "$BRIDGE_PLIST")" == "https://github.com/519tech/519-Tech-Intake-Recorder-Releases/releases/latest/download/appcast.xml" ]]
+            [[ "$(plutil -extract SUPublicEDKey raw -o - "$BRIDGE_PLIST")" == "$SPARKLE_PUBLIC_ED_KEY" ]]
+            [[ "$(plutil -extract SURequireSignedFeed raw -o - "$BRIDGE_PLIST")" == "true" ]]
+            [[ "$(plutil -extract SUVerifyUpdateBeforeExtraction raw -o - "$BRIDGE_PLIST")" == "true" ]]
+            if find "$BRIDGE_APP/Contents" -type f \( -name '*.provisionprofile' -o -name '*.mobileprovision' \) -print -quit | grep -q .; then
+              echo "The durable bridge must not contain a provisioning profile." >&2
+              exit 1
+            fi
+          fi
+
+          EXPECTED_URL="https://github.com/519tech/519-Tech-Intake-Recorder-Releases/releases/download/$GITHUB_REF_NAME/$DMG_NAME"
+          swift scripts/verify_internal_sparkle_release.swift \
+            "$APPCAST_PATH" \
+            "$DMG_PATH" \
+            "$BRIDGE_DMG_PATH" \
+            "$SPARKLE_PUBLIC_ED_KEY" \
+            "$VERSION" \
+            "$APP_BUILD" \
+            "$BRIDGE_BUILD" \
+            "$EXPECTED_URL" \
+            "14.0"
+
+          if [[ -n "$BRIDGE_MOUNT_DIR" ]]; then
+            hdiutil detach "$BRIDGE_MOUNT_DIR" -quiet
+            rm -rf "$BRIDGE_MOUNT_DIR"
+            BRIDGE_MOUNT_DIR=""
+          fi
+          hdiutil detach "$MOUNT_DIR" -quiet
+          rm -rf "$MOUNT_DIR"
+          trap - EXIT
+
+          STAGING_DIR="$RUNNER_TEMP/verified-internal-release"
+          install -d -m 700 "$STAGING_DIR"
+          cp "$DMG_PATH" "$STAGING_DIR/$DMG_NAME"
+          cp "$APPCAST_PATH" "$STAGING_DIR/appcast.xml"
+          {
+            echo "dmg_sha256=$(shasum -a 256 "$STAGING_DIR/$DMG_NAME" | awk '{print $1}')"
+            echo "appcast_sha256=$(shasum -a 256 "$STAGING_DIR/appcast.xml" | awk '{print $1}')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload verified internal release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-internal-release-${{ github.ref_name }}
+          path: ${{ runner.temp }}/verified-internal-release
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: verify
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified internal release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: verified-internal-release-${{ github.ref_name }}
+          path: release
+
+      - name: Verify the internal artifact handoff
+        env:
+          DMG_NAME: ${{ needs.verify.outputs.dmg_name }}
+          EXPECTED_DMG_SHA256: ${{ needs.verify.outputs.dmg_sha256 }}
+          EXPECTED_APPCAST_SHA256: ${{ needs.verify.outputs.appcast_sha256 }}
+        run: |
+          [[ -f "release/$DMG_NAME" && ! -L "release/$DMG_NAME" ]]
+          [[ -f release/appcast.xml && ! -L release/appcast.xml ]]
+          [[ "$(find release -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "2" ]]
+          [[ -z "$(find release -type l -print -quit)" ]]
+          [[ "$(shasum -a 256 "release/$DMG_NAME" | awk '{print $1}')" == "$EXPECTED_DMG_SHA256" ]]
+          [[ "$(shasum -a 256 release/appcast.xml | awk '{print $1}')" == "$EXPECTED_APPCAST_SHA256" ]]
+
+      - name: Create, verify, and publish the internal installer release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          DMG_NAME: ${{ needs.verify.outputs.dmg_name }}
+          EXPECTED_DMG_SHA256: ${{ needs.verify.outputs.dmg_sha256 }}
+          EXPECTED_APPCAST_SHA256: ${{ needs.verify.outputs.appcast_sha256 }}
+        run: |
+          NOTES="$RUNNER_TEMP/internal-release-notes.md"
+          print -r -- "# 519 Tech Intake Recorder $VERSION" > "$NOTES"
+          print -r -- "" >> "$NOTES"
+          print -r -- "Internal staff build with signed Sparkle updates. The app is ad-hoc signed and is not Apple-notarized." >> "$NOTES"
+          print -r -- "Application source, customer data, API keys, and signing keys are not included in this binary-only release." >> "$NOTES"
+
+          RELEASE_STATE="$RUNNER_TEMP/internal-release-state.json"
+          if gh release view "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets,isDraft,isPrerelease,tagName > "$RELEASE_STATE" 2>/dev/null; then
+            jq -e --arg tag "$GITHUB_REF_NAME" '
+              .tagName == $tag and .isPrerelease == false
+            ' "$RELEASE_STATE" >/dev/null
+
+            if [[ "$(jq -r .isDraft "$RELEASE_STATE")" != "true" ]]; then
+              jq -e --arg dmg "$DMG_NAME" '
+                (.assets | length) == 2 and
+                ([.assets[].name] | sort) == ([$dmg, "appcast.xml"] | sort)
+              ' "$RELEASE_STATE" >/dev/null
+              PUBLISHED_DIR="$(mktemp -d "$RUNNER_TEMP/published-internal.XXXXXX")"
+              trap 'rm -rf "$PUBLISHED_DIR"' EXIT
+              gh release download "$GITHUB_REF_NAME" \
+                --repo "$GITHUB_REPOSITORY" \
+                --dir "$PUBLISHED_DIR" \
+                --pattern "$DMG_NAME" \
+                --pattern appcast.xml
+              [[ "$(find "$PUBLISHED_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "2" ]]
+              [[ "$(shasum -a 256 "$PUBLISHED_DIR/$DMG_NAME" | awk '{print $1}')" == "$EXPECTED_DMG_SHA256" ]]
+              [[ "$(shasum -a 256 "$PUBLISHED_DIR/appcast.xml" | awk '{print $1}')" == "$EXPECTED_APPCAST_SHA256" ]]
+              [[ "$(gh api "/repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" == "$GITHUB_REF_NAME" ]]
+              exit 0
+            fi
+
+            gh release edit "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "519 Tech Intake Recorder $VERSION" \
+              --notes-file "$NOTES" \
+              --draft \
+              --prerelease=false
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "519 Tech Intake Recorder $VERSION" \
+              --notes-file "$NOTES" \
+              --draft
+          fi
+
+          gh release upload "$GITHUB_REF_NAME" \
+            "release/$DMG_NAME" \
+            release/appcast.xml \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+          SERVER_DIR="$(mktemp -d "$RUNNER_TEMP/server-internal.XXXXXX")"
+          PUBLISHED_DIR="$(mktemp -d "$RUNNER_TEMP/published-internal.XXXXXX")"
+          trap 'rm -rf "$SERVER_DIR" "$PUBLISHED_DIR"' EXIT
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$SERVER_DIR" \
+            --pattern "$DMG_NAME" \
+            --pattern appcast.xml
+          [[ "$(find "$SERVER_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "2" ]]
+          [[ "$(shasum -a 256 "$SERVER_DIR/$DMG_NAME" | awk '{print $1}')" == "$EXPECTED_DMG_SHA256" ]]
+          [[ "$(shasum -a 256 "$SERVER_DIR/appcast.xml" | awk '{print $1}')" == "$EXPECTED_APPCAST_SHA256" ]]
+
+          DRAFT_STATE="$RUNNER_TEMP/internal-draft-state.json"
+          gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets,isDraft,isPrerelease,tagName > "$DRAFT_STATE"
+          jq -e --arg tag "$GITHUB_REF_NAME" --arg dmg "$DMG_NAME" '
+            .tagName == $tag and .isDraft == true and .isPrerelease == false and
+            (.assets | length) == 2 and
+            ([.assets[].name] | sort) == ([$dmg, "appcast.xml"] | sort)
+          ' "$DRAFT_STATE" >/dev/null
+
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft=false \
+            --prerelease=false \
+            --latest
+
+          PUBLISHED_STATE="$RUNNER_TEMP/internal-published-state.json"
+          gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets,isDraft,isPrerelease,tagName > "$PUBLISHED_STATE"
+          jq -e --arg tag "$GITHUB_REF_NAME" --arg dmg "$DMG_NAME" '
+            .tagName == $tag and .isDraft == false and .isPrerelease == false and
+            (.assets | length) == 2 and
+            ([.assets[].name] | sort) == ([$dmg, "appcast.xml"] | sort)
+          ' "$PUBLISHED_STATE" >/dev/null
+
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$PUBLISHED_DIR" \
+            --pattern "$DMG_NAME" \
+            --pattern appcast.xml
+          [[ "$(find "$PUBLISHED_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "2" ]]
+          [[ "$(shasum -a 256 "$PUBLISHED_DIR/$DMG_NAME" | awk '{print $1}')" == "$EXPECTED_DMG_SHA256" ]]
+          [[ "$(shasum -a 256 "$PUBLISHED_DIR/appcast.xml" | awk '{print $1}')" == "$EXPECTED_APPCAST_SHA256" ]]
+          [[ "$(gh api "/repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" == "$GITHUB_REF_NAME" ]]
