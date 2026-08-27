@@ -6,15 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>519 Tech Intake Recorder</title>
         <item>
-            <title>0.2.2</title>
-            <pubDate>Tue, 25 Aug 2026 00:37:06 +0000</pubDate>
+            <title>0.2.3</title>
+            <pubDate>Thu, 27 Aug 2026 19:56:02 +0000</pubDate>
             <link>https://github.com/519tech/519-Tech-Intake-Recorder-Releases</link>
             <sparkle:channel>internal</sparkle:channel>
-            <sparkle:version>32794193496</sparkle:version>
-            <sparkle:shortVersionString>0.2.2</sparkle:shortVersionString>
+            <sparkle:version>33110591711</sparkle:version>
+            <sparkle:shortVersionString>0.2.3</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/519tech/519-Tech-Intake-Recorder-Releases/releases/download/internal-v0.2.2/519-Tech-Intake-Recorder-0.2.2.dmg" length="2217763" type="application/octet-stream" sparkle:edSignature="zJAC/C96QeVHJJkCB0Kfda12emh8zkOU7++xzuRhTwyZuD6HlmVdUeZI4Ri3JAnmLrSHoM24dynWTFItk3I4BA=="/>
+            <enclosure url="https://github.com/519tech/519-Tech-Intake-Recorder-Releases/releases/download/internal-v0.2.3/519-Tech-Intake-Recorder-0.2.3.dmg" length="2311381" type="application/octet-stream" sparkle:edSignature="XZ+n01ygdWHaF7IGe6V8+nUnH2baMyDJA5eQ/lvs7lzaCrtSTmIzrjUtgmqBaGUpGdQmuw9ztVu3kZeiAg/DDw=="/>
         </item>
         <item>
             <title>0.1.2</title>
@@ -29,6 +29,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: DPeqHVMJKM+kZNM13OEzKNZs4UsjErc1mia4yQSOXKxWP39J/YikpYwAsO/9yctrJRNKAeClBM+aKCY4L9pIBg==
+edSignature: fraXuZiXDrzBed+lkxf9VGIlRbLDBupfIjwNrZ8bwTtBVIix0BxTrPtS4scnerTTTx/ei8ZUnvwdtvUwSFnPCA==
 length: 2154
 -->
